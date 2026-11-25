@@ -3122,7 +3122,6 @@ main().catch(error => {
 
 - `zirh.request` ishlashi uchun `data.json` da `hashlar` bo'lishi shart. Hash'i ro'yxatda bo'lmagan domenga so'rov yuborilmaydi.
 - **Ilova imzosi (`imzo`).** Ilova Play Market orqali tarqatilsa va Play App Signing yoqilgan bo'lsa, `imzo` ga yuklash kaliti (upload key) emas, Google'ning kaliti yoziladi. Uni Play Console'da topasiz: **Protected with Play → Play Store protection → Play app signing → App signing key → Classical key → SHA-256 certificate fingerprint**. Qiymatni ikki nuqtasiz, kichik harflarda yozing.
-- **Imzo kaliti yangilangan (key upgrade) bo'lsa**, Android 13 va undan yangi qurilmalar yangi kalitni, Android 7–12 qurilmalar esa eski kalitni ko'radi. `imzo` maydoni bitta qiymat qabul qilgani uchun bunday holatda tekshiruvni eski qurilmalarda alohida sinab ko'ring.
 - `iOS` simulyator uchun xcframework faqat `arm64` arxitekturasini o'z ichiga oladi, shuning uchun Intel protsessorli Mac'dagi simulyatorda ishlamaydi.
 - Sozlamalar native qismda saqlangani uchun ularni o'zgartirgandan keyin ilovani qayta build qilish kerak. OTA yangilanishlar (CodePush, hot-updater va boshqalar) ularni o'zgartira olmaydi.
 
