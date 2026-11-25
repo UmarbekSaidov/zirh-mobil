@@ -3,6 +3,7 @@
 [![Android](https://img.shields.io/badge/Android-blue?style=for-the-badge)](#android)
 [![Flutter](https://img.shields.io/badge/Flutter-blue?style=for-the-badge)](#Flutter)
 [![iOS](https://img.shields.io/badge/iOS-blue?style=for-the-badge)](#iOS)
+[![React Native](https://img.shields.io/badge/React%20Native-blue?style=for-the-badge)](#react-native)
 
 ---
 # Android
@@ -2168,3 +2169,484 @@ Hash qiymatlar doim tog'ri kiritilishiga etibor bering.
 
 ---
 
+# React Native
+
+Zirh-mobil kutubxonasini React Native loyihasiga ulash uchun JS va native qism o'rtasida kichik ko'prik (TurboModule) yoziladi. Quyidagi qo'llanma React Native'ning yangi arxitekturasi (New Architecture, `newArchEnabled=true`) uchun yozilgan va React Native 0.88 da sinab ko'rilgan.
+
+Ko'prik orqali JS'ga ikkita funksiya chiqariladi:
+
+| JS funksiya | Native funksiya | Vazifasi |
+| :--- | :--- | :--- |
+| `zirh.get(path)` | `malumotolish` / `ios_malumot_olish` | `data.enc` ichidan qiymat o'qish |
+| `zirh.request({...})` | `malumotalmashish` / `ios_malumot_almashish` | SSL pinning bilan so'rov yuborish |
+
+Root, emulyator, VPN, imzo va Play Market tekshiruvlari esa avvalgidek `data.json` dagi qiymatlar orqali avtomatik ishlaydi.
+
+> ⚠️ **Muhim:** Zirh emulyator va simulyatorda ilovani `data.json` dagi qiymatlardan qat'i nazar yopadi. Android emulyatorida `su` fayli bo'lgani uchun u root qurilma deb topiladi, iOS simulyatorida esa `zirh_ios_boshlash` ilovani to'xtatadi. Shuning uchun quyidagi qo'llanmada Zirh faqat **release** build'da ishga tushadi, debug build'da esa ishga tushmaydi va emulyatorda bemalol ishlash mumkin bo'ladi.
+
+## 1. JS qism
+
+Loyihada `src/specs/NativeZirh.ts` faylini yarating. Codegen shu fayldan Android va iOS uchun native interfeysni yaratadi.
+
+```ts
+import type { TurboModule } from 'react-native';
+import { TurboModuleRegistry } from 'react-native';
+
+export interface Spec extends TurboModule {
+  // data.enc ichidan qiymat o'qiydi, masalan "api.base_url".
+  get(path: string): string;
+
+  // Zirh orqali SSL pinning bilan so'rov yuboradi va javobni matn ko'rinishida qaytaradi.
+  request(
+    url: string,
+    method: string,
+    body: string | null,
+    headers: string | null,
+    filePath: string | null,
+    fileName: string | null,
+    fileField: string | null,
+  ): Promise<string>;
+}
+
+export default TurboModuleRegistry.getEnforcing<Spec>('NativeZirh');
+```
+
+`package.json` fayliga `codegenConfig` qo'shing. `javaPackageName` ni o'z ilovangiz paketiga moslang:
+
+```json
+"codegenConfig": {
+  "name": "NativeZirhSpec",
+  "type": "modules",
+  "jsSrcsDir": "src/specs",
+  "android": {
+    "javaPackageName": "com.example.zirh"
+  },
+  "ios": {
+    "modulesProvider": {
+      "NativeZirh": "RCTNativeZirh"
+    }
+  }
+}
+```
+
+Ilovaning istalgan joyida ishlatish uchun `src/zirh.ts` faylini yarating:
+
+```ts
+import NativeZirh from './specs/NativeZirh';
+
+type RequestOptions = {
+  url: string;
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  body?: unknown;
+  headers?: Record<string, string>;
+  // Fayl yuklash: fayl yo'li, nomi va forma maydoni.
+  file?: { path: string; name: string; field: string };
+};
+
+// Zirh javobi: HTTP status va javob matni yoki so'rov serverga yetib bormagan bo'lsa xato matni.
+type ZirhResponse = { status: number; data: string; error?: string };
+
+// data.enc dan qiymat o'qish. Obyekt va massivlar JSON matn ko'rinishida qaytadi.
+const get = (path: string): string => NativeZirh.get(path);
+
+const getJson = <T>(path: string): T | null => {
+  try {
+    return JSON.parse(get(path)) as T;
+  } catch {
+    return null;
+  }
+};
+
+// SSL pinning bilan so'rov. Har qanday HTTP statusda resolve bo'ladi, statusni o'zingiz tekshiring.
+const request = async ({
+  url,
+  method = 'GET',
+  body,
+  headers,
+  file,
+}: RequestOptions): Promise<ZirhResponse> => {
+  const raw = await NativeZirh.request(
+    url,
+    method,
+    body === undefined
+      ? null
+      : typeof body === 'string'
+      ? body
+      : JSON.stringify(body),
+    headers ? JSON.stringify(headers) : null,
+    file?.path ?? null,
+    file?.name ?? null,
+    file?.field ?? null,
+  );
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<ZirhResponse>;
+    return {
+      status: parsed.status ?? 0,
+      data: parsed.data ?? '',
+      error: parsed.error,
+    };
+  } catch {
+    return { status: 0, data: raw };
+  }
+};
+
+export default { get, getJson, request };
+```
+
+## 2. Android
+
+`.aar` faylni `android/app/libs/` papkasiga joylashtiring va `android/app/build.gradle` faylida ulang:
+
+```gradle
+dependencies {
+    implementation files("libs/zirhlib-release-v2.0.4.aar")
+}
+```
+
+`android/app/src/main/AndroidManifest.xml` fayliga ruxsatlar va `queries` ni qo'shing:
+
+```xml
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+<queries>
+    <package android:name="com.android.vending" />
+    <package android:name="com.sec.android.app.samsungapps" />
+</queries>
+```
+
+`android/app/proguard-rules.pro` fayliga Zirh klasslarini saqlash qoidasini qo'shing:
+
+```
+-keep class uz.zirh.zirhlib.** { *; }
+```
+
+Zirh ilova ishga tushishi bilan o'zini `ZirhBoshlash` ContentProvider orqali avtomatik boshlaydi. Debug build'da emulyatorda ishlash uchun uni o'chirib qo'ying. Buning uchun `android/app/src/debug/AndroidManifest.xml` faylini yarating:
+
+```xml
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <provider
+            android:name="uz.zirh.zirhlib.ZirhBoshlash"
+            android:authorities="${applicationId}.zirh-boshlash"
+            tools:node="remove" />
+    </application>
+</manifest>
+```
+
+`data.enc` va `kalit.enc` fayllarini `android/app/src/release/assets/` papkasiga joylashtiring. Debug build ham `zirh.get` va `zirh.request` dan foydalanishi kerak bo'lsa, tekshiruvlari o'chirilgan alohida sozlamani `android/app/src/debug/assets/` papkasiga qo'ying.
+
+Ko'prik uchun `android/app/src/main/java/com/example/zirh/NativeZirhModule.kt` faylini yarating. `malumotalmashish` server javob bermaguncha kutib turadi, shuning uchun u alohida thread'da chaqiriladi:
+
+```kotlin
+package com.example.zirh
+
+import com.facebook.react.bridge.Promise
+import com.facebook.react.bridge.ReactApplicationContext
+import uz.zirh.zirhlib.ZirhMilliy
+import java.util.concurrent.Executors
+
+class NativeZirhModule(reactContext: ReactApplicationContext) : NativeZirhSpec(reactContext) {
+
+  // Birinchi chaqiruvda yaratiladi.
+  private val zirh by lazy { ZirhMilliy() }
+
+  // malumotalmashish javob kelguncha kutadi, shuning uchun JS thread'da chaqirilmaydi.
+  private val executor = Executors.newCachedThreadPool()
+
+  override fun getName() = NAME
+
+  override fun get(path: String): String = zirh.malumotolish(path) ?: ""
+
+  override fun request(
+    url: String,
+    method: String,
+    body: String?,
+    headers: String?,
+    filePath: String?,
+    fileName: String?,
+    fileField: String?,
+    promise: Promise,
+  ) {
+    executor.execute {
+      try {
+        val response =
+          zirh.malumotalmashish(url, method, body, headers, filePath, null, fileName, fileField)
+        promise.resolve(response ?: "")
+      } catch (e: Throwable) {
+        promise.reject("ZIRH_REQUEST_FAILED", e.message, e)
+      }
+    }
+  }
+
+  override fun invalidate() {
+    executor.shutdown()
+    super.invalidate()
+  }
+
+  companion object {
+    const val NAME = "NativeZirh"
+  }
+}
+```
+
+Shu papkada `ZirhPackage.kt` faylini yarating:
+
+```kotlin
+package com.example.zirh
+
+import com.facebook.react.BaseReactPackage
+import com.facebook.react.bridge.NativeModule
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.module.model.ReactModuleInfo
+import com.facebook.react.module.model.ReactModuleInfoProvider
+
+class ZirhPackage : BaseReactPackage() {
+
+  override fun getModule(name: String, reactContext: ReactApplicationContext): NativeModule? =
+    if (name == NativeZirhModule.NAME) NativeZirhModule(reactContext) else null
+
+  override fun getReactModuleInfoProvider() = ReactModuleInfoProvider {
+    mapOf(
+      NativeZirhModule.NAME to
+        ReactModuleInfo(
+          name = NativeZirhModule.NAME,
+          className = NativeZirhModule.NAME,
+          canOverrideExistingModule = false,
+          needsEagerInit = false,
+          isCxxModule = false,
+          isTurboModule = true,
+        ),
+    )
+  }
+}
+```
+
+`MainApplication.kt` faylida paketni ro'yxatga qo'shing:
+
+```kotlin
+import com.example.zirh.ZirhPackage
+
+PackageList(this).packages.apply {
+  add(ZirhPackage())
+}
+```
+
+## 3. iOS
+
+iOS qismi CocoaPods orqali mahalliy pod (local pod) ko'rinishida ulanadi. Loyihada quyidagi tuzilmani yarating:
+
+```
+ios/
+├── Podfile
+└── ZirhSDK/
+    ├── ZirhSDK.podspec
+    ├── ZirhIosSDK.xcframework
+    ├── ZirhBootstrap.h
+    ├── ZirhBootstrap.m
+    ├── RCTNativeZirh.h
+    ├── RCTNativeZirh.mm
+    └── config/
+        ├── data.enc
+        └── kalit.enc
+```
+
+`ZirhSDK.podspec`:
+
+```ruby
+Pod::Spec.new do |s|
+  s.name         = "ZirhSDK"
+  s.version      = "1.0.1"
+  s.summary      = "Zirh mobile security SDK and its React Native bridge"
+  s.homepage     = "https://github.com/zirh-uz/zirh-mobil"
+  s.license      = { :type => "Proprietary" }
+  s.authors      = "Zirh"
+  s.platforms    = { :ios => min_ios_version_supported }
+  s.source       = { :path => "." }
+
+  s.source_files         = "*.{h,m,mm}"
+  s.public_header_files  = "ZirhBootstrap.h"
+  s.private_header_files = "RCTNativeZirh.h"
+  s.vendored_frameworks  = "ZirhIosSDK.xcframework"
+  s.resources            = "config/*.enc"
+
+  s.frameworks = "Security", "SystemConfiguration", "CoreFoundation"
+  s.pod_target_xcconfig = { "DEFINES_MODULE" => "YES" }
+
+  install_modules_dependencies(s)
+end
+```
+
+`Podfile` da `use_native_modules!` dan keyin podni ulang va `pod install` qiling:
+
+```ruby
+pod 'ZirhSDK', :path => './ZirhSDK'
+```
+
+`ZirhBootstrap.h`:
+
+```objc
+#import <Foundation/Foundation.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+@interface ZirhBootstrap : NSObject
+
+/// Zirh'ni ilova ichidagi shifrlangan sozlama bilan ishga tushiradi.
++ (void)start;
+
+@end
+
+NS_ASSUME_NONNULL_END
+```
+
+`ZirhBootstrap.m`. Zirh simulyatorda ilovani yopgani uchun u faqat release build'da ishga tushadi:
+
+```objc
+#import "ZirhBootstrap.h"
+#import "zirh_ios.h"
+
+@implementation ZirhBootstrap
+
++ (void)start
+{
+#if !DEBUG
+  NSString *keyPath = [NSBundle.mainBundle pathForResource:@"kalit" ofType:@"enc"];
+  NSString *dataPath = [NSBundle.mainBundle pathForResource:@"data" ofType:@"enc"];
+
+  if (keyPath == nil || dataPath == nil) {
+    NSLog(@"[Zirh] data.enc yoki kalit.enc topilmadi");
+    return;
+  }
+
+  zirh_ios_boshlash(keyPath.UTF8String, dataPath.UTF8String);
+#endif
+}
+
+@end
+```
+
+`RCTNativeZirh.h`:
+
+```objc
+#import <Foundation/Foundation.h>
+#import <NativeZirhSpec/NativeZirhSpec.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+@interface RCTNativeZirh : NSObject <NativeZirhSpec>
+
+@end
+
+NS_ASSUME_NONNULL_END
+```
+
+`RCTNativeZirh.mm`. SDK qaytargan har bir natija `ios_xotirani_tozalash` bilan tozalanadi:
+
+```objc
+#import "RCTNativeZirh.h"
+
+extern "C" {
+#import "zirh_ios.h"
+}
+
+static NSString *ZirhTakeString(char *value)
+{
+  if (value == NULL) {
+    return @"";
+  }
+  NSString *result = [NSString stringWithUTF8String:value] ?: @"";
+  ios_xotirani_tozalash(value);
+  return result;
+}
+
+@implementation RCTNativeZirh
+
++ (NSString *)moduleName
+{
+  return @"NativeZirh";
+}
+
+- (std::shared_ptr<facebook::react::TurboModule>)getTurboModule:
+    (const facebook::react::ObjCTurboModule::InitParams &)params
+{
+  return std::make_shared<facebook::react::NativeZirhSpecJSI>(params);
+}
+
+- (NSString *)get:(NSString *)path
+{
+  return ZirhTakeString(ios_malumot_olish(path.UTF8String));
+}
+
+- (void)request:(NSString *)url
+         method:(NSString *)method
+           body:(NSString *_Nullable)body
+        headers:(NSString *_Nullable)headers
+       filePath:(NSString *_Nullable)filePath
+       fileName:(NSString *_Nullable)fileName
+      fileField:(NSString *_Nullable)fileField
+        resolve:(RCTPromiseResolveBlock)resolve
+         reject:(RCTPromiseRejectBlock)reject
+{
+  // ios_malumot_almashish javob kelguncha kutadi.
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    char *response = ios_malumot_almashish(
+        url.UTF8String, method.UTF8String, body.UTF8String, headers.UTF8String,
+        filePath.UTF8String, NULL, 0, fileName.UTF8String, fileField.UTF8String);
+    resolve(ZirhTakeString(response));
+  });
+}
+
+@end
+```
+
+`AppDelegate.swift` da Zirh'ni ilova ochilishi bilan ishga tushiring:
+
+```swift
+import UIKit
+import ZirhSDK
+
+@main
+class AppDelegate: UIResponder, UIApplicationDelegate {
+  func application(
+    _ application: UIApplication,
+    didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+  ) -> Bool {
+    ZirhBootstrap.start()
+    return true
+  }
+}
+```
+
+## 4. Ishlatish
+
+```ts
+import zirh from './zirh';
+
+const baseUrl = zirh.get('api.base_url');
+
+const res = await zirh.request({
+  url: `${baseUrl}users/me`,
+  method: 'GET',
+  headers: { Authorization: `Bearer ${token}` },
+});
+
+if (res.status === 200) {
+  const user = JSON.parse(res.data);
+}
+```
+
+`malumotalmashish` JSON matn qaytaradi. Server javob bersa `{"status": 200, "data": "..."}` ko'rinishida, so'rov serverga yetib bormasa (masalan hash noto'g'ri bo'lsa) `{"status": 500, "error": "..."}` ko'rinishida bo'ladi. Yuqoridagi `zirh.request` buni `{ status, data, error }` obyektiga aylantirib beradi.
+
+## 5. Eslatmalar
+
+- `zirh.request` ishlashi uchun `data.json` da `hashlar` bo'lishi shart. Hash'i ro'yxatda bo'lmagan domenga so'rov yuborilmaydi.
+- **Ilova imzosi (`imzo`).** Ilova Play Market orqali tarqatilsa va Play App Signing yoqilgan bo'lsa, `imzo` ga yuklash kaliti (upload key) emas, Google'ning kaliti yoziladi. Uni Play Console'da topasiz: **Protected with Play → Play Store protection → Play app signing → App signing key → Classical key → SHA-256 certificate fingerprint**. Qiymatni ikki nuqtasiz, kichik harflarda yozing.
+- **Imzo kaliti yangilangan (key upgrade) bo'lsa**, Android 13 va undan yangi qurilmalar yangi kalitni, Android 7–12 qurilmalar esa eski kalitni ko'radi. `imzo` maydoni bitta qiymat qabul qilgani uchun bunday holatda tekshiruvni eski qurilmalarda alohida sinab ko'ring.
+- `iOS` simulyator uchun xcframework faqat `arm64` arxitekturasini o'z ichiga oladi, shuning uchun Intel protsessorli Mac'dagi simulyatorda ishlamaydi.
+- Sozlamalar native qismda saqlangani uchun ularni o'zgartirgandan keyin ilovani qayta build qilish kerak. OTA yangilanishlar (CodePush, hot-updater va boshqalar) ularni o'zgartira olmaydi.
+
+---
