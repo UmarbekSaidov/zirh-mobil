@@ -2182,6 +2182,8 @@ Ko'prik orqali JS'ga ikkita funksiya chiqariladi:
 
 Root, emulyator, VPN, imzo va Play Market tekshiruvlari esa avvalgidek `data.json` dagi qiymatlar orqali avtomatik ishlaydi.
 
+`data.json` yozish, shifrlash va `data.enc` / `kalit.enc` fayllarini joyiga qo'yishni qo'lda qilish shart emas: buni [5-qismdagi `zirh.mjs` scripti](#5-sozlamani-yaratish-zirhmjs-scripti) bir buyruq bilan bajaradi.
+
 > ⚠️ **Muhim:** Zirh emulyator va simulyatorda ilovani `data.json` dagi qiymatlardan qat'i nazar yopadi. Android emulyatorida `su` fayli bo'lgani uchun u root qurilma deb topiladi, iOS simulyatorida esa `zirh_ios_boshlash` ilovani to'xtatadi. Shuning uchun quyidagi qo'llanmada Zirh faqat **release** build'da ishga tushadi, debug build'da esa ishga tushmaydi va emulyatorda bemalol ishlash mumkin bo'ladi.
 
 ## 1. JS qism
@@ -2337,7 +2339,7 @@ Zirh ilova ishga tushishi bilan o'zini `ZirhBoshlash` ContentProvider orqali avt
 </manifest>
 ```
 
-`data.enc` va `kalit.enc` fayllarini `android/app/src/release/assets/` papkasiga joylashtiring. Debug build ham `zirh.get` va `zirh.request` dan foydalanishi kerak bo'lsa, tekshiruvlari o'chirilgan alohida sozlamani `android/app/src/debug/assets/` papkasiga qo'ying.
+`data.enc` va `kalit.enc` fayllari `android/app/src/release/assets/` papkasiga, tekshiruvlari o'chirilgan debug sozlamasi esa `android/app/src/debug/assets/` papkasiga joylashadi. Ularni [`zirh.mjs` scripti](#5-sozlamani-yaratish-zirhmjs-scripti) yaratib, o'zi joyiga qo'yadi.
 
 Ko'prik uchun `android/app/src/main/java/com/example/zirh/NativeZirhModule.kt` faylini yarating. `malumotalmashish` server javob bermaguncha kutib turadi, shuning uchun u alohida thread'da chaqiriladi:
 
@@ -2450,8 +2452,8 @@ ios/
     ├── RCTNativeZirh.h
     ├── RCTNativeZirh.mm
     └── config/
-        ├── data.enc
-        └── kalit.enc
+        ├── data.enc     <- zirh.mjs yaratadi
+        └── kalit.enc    <- zirh.mjs yaratadi
 ```
 
 `ZirhSDK.podspec`:
@@ -2641,7 +2643,482 @@ if (res.status === 200) {
 
 `malumotalmashish` JSON matn qaytaradi. Server javob bersa `{"status": 200, "data": "..."}` ko'rinishida, so'rov serverga yetib bormasa (masalan hash noto'g'ri bo'lsa) `{"status": 500, "error": "..."}` ko'rinishida bo'ladi. Yuqoridagi `zirh.request` buni `{ status, data, error }` obyektiga aylantirib beradi.
 
-## 5. Eslatmalar
+## 5. Sozlamani yaratish (`zirh.mjs` scripti)
+
+Bu script "Ma'lumotlarni Shifrlash" qismidagi barcha qadamlarni bitta buyruq bilan bajaradi: `data.json` ni yozadi, server sertifikatidan pinning hash oladi, AES va RSA bilan shifrlaydi va `data.enc` / `kalit.enc` fayllarini Android va iOS loyihasidagi kerakli papkalarga qo'yadi. `openssl` buyruqlarini qo'lda yozish shart emas.
+
+Script ishga tushganda ikki narsani so'raydi. **Ikkalasi ham ixtiyoriy**: bo'sh qoldirib Enter bossangiz, script davom etadi, faqat tegishli funksiya ishlamaydi.
+
+| So'raladi | Nima uchun kerak | Berilmasa |
+| :--- | :--- | :--- |
+| API manzili (base URL) | `zirh.request`: script shu serverdan pinning hash (`hashlar`) oladi | `zirh.request` ishlamaydi, qolgani ishlaydi |
+| Ilova imzosining SHA-256 qiymati | "Ilova imzosi" tekshiruvi (`imzo`), faqat Android | Shu tekshiruvni yoqib bo'lmaydi, qolgani ishlaydi |
+
+Root/jailbreak, emulyator, VPN va Play Market tekshiruvlariga bularning hech biri kerak emas. SHA-256 ni qayerdan olishni script o'zi qadam-baqadam ko'rsatadi (qisqasi: Play Console → **Protected with Play → Play app signing → App signing key → Classical key → SHA-256**).
+
+Keyin release build'da qaysi tekshiruvlar yoniq bo'lishini ro'yxatdan belgilaysiz:
+
+```
+◆  Release build'da qaysi tekshiruvlar yoniq bo'lsin?
+│  ◻ Root / jailbreak va hook vositalari (Frida)
+│  ◻ Emulyator / simulyator
+│  ◻ VPN
+│  ◻ Ilova imzosi
+│  ◻ Play Market'dan o'rnatilgani
+```
+
+### O'rnatish
+
+1. Quyidagi kodni loyihangizda `scripts/zirh.mjs` fayliga saqlang.
+2. Script ishlatadigan kutubxonani o'rnating:
+
+```bash
+yarn add -D @clack/prompts
+```
+
+3. `package.json` ga buyruq qo'shing:
+
+```json
+"scripts": {
+  "zirh": "node scripts/zirh.mjs"
+}
+```
+
+4. Loyiha ildizidan ishga tushiring:
+
+```bash
+yarn zirh
+```
+
+Javoblar loyiha ildizidagi `zirh.config.json` fayliga yoziladi va keyingi safar tayyor holda taklif qilinadi. Tekshiruvlar faqat **release** build'ga ta'sir qiladi, Android debug build uchun hamma tekshiruv o'chirilgan alohida sozlama yoziladi. Sozlama o'zgargach ilovani qayta build qiling.
+
+CI uchun savolsiz ishlatish ham mumkin (saqlangan javoblar bilan):
+
+```bash
+node scripts/zirh.mjs --checks=vpn,emulyator
+node scripts/zirh.mjs --checks=none --url=https://api.example.com/ --sha=AA:BB:...
+```
+
+Script Node.js 18 va undan yangi versiyada ishlaydi.
+
+<details>
+<summary><b>scripts/zirh.mjs</b> (ochish uchun bosing)</summary>
+
+```js
+// Zirh himoya sozlamalarini (data.enc / kalit.enc) yaratadigan interaktiv yordamchi.
+//
+// O'rnatish:   yarn add -D @clack/prompts      (yoki npm i -D @clack/prompts)
+// Ishga tushirish (loyiha ildizidan):   node scripts/zirh.mjs
+//
+// Nima qiladi:
+//   1. Ikki narsani so'raydi (ikkalasi ham ixtiyoriy, bo'sh qoldirib Enter bossa bo'ladi):
+//        - API manzili (base URL)    -> zirh.request uchun (SSL pinning)
+//        - Ilova imzosining SHA-256  -> "Ilova imzosi" tekshiruvi uchun (faqat Android)
+//   2. Release build'da qaysi tekshiruvlar yoniq bo'lishini tanlatadi.
+//   3. Sozlamani shifrlab, data.enc / kalit.enc fayllarini Android va iOS loyihasiga yozadi:
+//        android/app/src/release/assets/   - release sozlamasi
+//        android/app/src/debug/assets/     - debug sozlamasi (hamma tekshiruv o'chiq)
+//        ios/ZirhSDK/config/               - release sozlamasi
+//
+// Javoblar loyiha ildizidagi zirh.config.json fayliga yoziladi va keyingi safar tayyor
+// holda taklif qilinadi. O'zgarish kuchga kirishi uchun ilovani qayta build qiling.
+//
+// Savolsiz ishlatish (CI uchun, saqlangan javoblar bilan):
+//   node scripts/zirh.mjs --checks=vpn,emulyator        yoki   --checks=none
+//   qo'shimcha: --url=https://api.example.com/   --sha=AA:BB:...   (--url=none, --sha=none: o'chirish)
+import {
+  constants,
+  createCipheriv,
+  createHash,
+  publicEncrypt,
+  randomBytes,
+} from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import tls from 'node:tls';
+import * as p from '@clack/prompts';
+
+// Zirh'ning ochiq kaliti (shu repodagi public_key.pem). Maxfiy emas.
+// Zirh yangi kalit chiqarsagina almashtiriladi.
+const ZIRH_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnMcjNmiuVRwH1uDDuzRQ
+XeFfIQGkExGBVz+kTK1IGc29OdmysUMwj0bB4qVsKeMlesjF0WQZehr/1SIRKFMj
+BIiUoyMK5c5j2yoxETo5bFdsKjKGQyjKfzd+48cxlI4ouWriz2fs4tcl088H5+be
+TNp8g4zKzQ9HO78OL0SZG1pG9zPzLaiUEd+Js8HzT0mUO5cgZSWuJAguuUn9TtEm
+Bgg1Ugw5Ocqcen5m/3cDX55iosdskHYiPlHpmNecv/Is4eA0DjKqYcXXX/wvkeBe
+k/CRijVNkfJ4vI6WNBDetOyntjBDUIjptY+WstxOrZdl5Cm1lOXyfQzPBO98FyjB
+8wIDAQAB
+-----END PUBLIC KEY-----
+`;
+
+const CHECKS = [
+  {
+    value: 'jailbreak',
+    label: 'Root / jailbreak va hook vositalari (Frida)',
+    hint: "iOS'da yonadi/o'chadi, Android'da doim yoniq",
+  },
+  { value: 'emulyator', label: 'Emulyator / simulyator' },
+  { value: 'vpn', label: 'VPN' },
+  { value: 'imzo', label: 'Ilova imzosi', hint: 'faqat Android, SHA-256 kerak' },
+  {
+    value: 'playmarket',
+    label: "Play Market'dan o'rnatilgani",
+    hint: 'faqat Android',
+  },
+];
+
+// Script loyiha ildizidan ishga tushiriladi (package.json "scripts" orqali).
+const ROOT = process.cwd();
+const SAVED_FILE = join(ROOT, 'zirh.config.json');
+
+const ANDROID_APP = join(ROOT, 'android/app');
+const ANDROID_RELEASE = join(ANDROID_APP, 'src/release/assets');
+const ANDROID_DEBUG = join(ANDROID_APP, 'src/debug/assets');
+const IOS_SDK = join(ROOT, 'ios/ZirhSDK');
+const IOS_CONFIG = join(IOS_SDK, 'config');
+
+const EXPLANATION = [
+  'Ikkita narsa so‘raladi. Ikkalasi ham ixtiyoriy: bo‘sh qoldirib Enter bossangiz,',
+  'script davom etadi, faqat tegishli funksiya ishlamaydi.',
+  '',
+  '1) API manzili (base URL)',
+  '   Nima uchun: zirh.request, ya’ni SSL pinning bilan so‘rov yuborish.',
+  '   Script shu serverning sertifikatidan pinning hash oladi.',
+  '   Bo‘lmasa:   zirh.request ishlamaydi. Qolgan hamma narsa ishlaydi.',
+  '',
+  '2) Ilova imzosining SHA-256 qiymati',
+  '   Nima uchun: "Ilova imzosi" tekshiruvi (qayta yig‘ilgan APK ochilmaydi). Faqat Android.',
+  '   Bo‘lmasa:   shu bitta tekshiruvni yoqib bo‘lmaydi. Qolgan hamma narsa ishlaydi.',
+  '',
+  'Root/jailbreak, emulyator, VPN va Play Market tekshiruvlariga bularning hech biri kerak emas.',
+].join('\n');
+
+const SHA_HELP = [
+  'Ilova Play Market orqali tarqatilsa (odatiy holat):',
+  '  1. play.google.com/console ni oching va ilovani tanlang.',
+  '  2. Chap menyu: Protected with Play.',
+  '  3. "Play Store protection" qatorini oching, ichidan "Play app signing" ga kiring.',
+  '     (Topilmasa: brauzerdagi manzil oxirini /keymanagement ga almashtiring.)',
+  '  4. "App signing key" bloki > "Classical key" ustuni >',
+  '     "SHA-256 certificate fingerprint" yonidagi nusxalash tugmasini bosing.',
+  '',
+  '  Diqqat: "Upload key" EMAS va "Post-quantum" ustuni EMAS.',
+  '  Google ilovani o‘z kaliti bilan qayta imzolaydi, telefonga o‘sha imzo boradi.',
+  '',
+  'APK to‘g‘ridan-to‘g‘ri tarqatilsa (Play Market’siz):',
+  '  keytool -list -v -keystore <release.keystore> -alias <alias>',
+  '  chiqqan "SHA256:" qatoridagi qiymat.',
+  '',
+  'Formati muhim emas: AA:BB:CC... ko‘rinishida ham, ikki nuqtasiz ham bo‘laveradi.',
+].join('\n');
+
+const readSaved = () => {
+  if (!existsSync(SAVED_FILE)) {
+    return { baseUrl: '', sha256: '', checks: [] };
+  }
+  const saved = JSON.parse(readFileSync(SAVED_FILE, 'utf8'));
+  return {
+    baseUrl: saved.baseUrl ?? '',
+    sha256: saved.sha256 ?? '',
+    checks: saved.checks ?? [],
+  };
+};
+
+// "A8:58:75:..." yoki "a85875..." -> Zirh kutadigan 64 belgili kichik hex.
+const normalizeSha = value => value.replace(/[^0-9a-f]/gi, '').toLowerCase();
+
+const isValidSha = value => /^[0-9a-f]{64}$/.test(value);
+
+const parseHttpsUrl = value => {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' ? url : null;
+  } catch {
+    return null;
+  }
+};
+
+const validateUrl = input => {
+  const value = (input ?? '').trim();
+  if (!value || parseHttpsUrl(value)) {
+    return undefined;
+  }
+  return "https:// bilan boshlanadigan to'liq manzil kiriting yoki bo'sh qoldiring";
+};
+
+const validateSha = input => {
+  const value = (input ?? '').trim();
+  if (!value || isValidSha(normalizeSha(value))) {
+    return undefined;
+  }
+  return "SHA-256 64 ta hex belgidan iborat bo'ladi. To'liq nusxalang yoki bo'sh qoldiring";
+};
+
+// Server sertifikati ochiq kalitining pinning hash'i: "sha256//<base64>".
+// README'dagi openssl buyrug'i bilan bir xil natija beradi.
+const fetchPinHash = (host, port) =>
+  new Promise((resolve, reject) => {
+    const socket = tls.connect({ host, port, servername: host }, () => {
+      const certificate = socket.getPeerX509Certificate();
+      socket.end();
+      if (!certificate) {
+        reject(new Error(`${host} sertifikat qaytarmadi`));
+        return;
+      }
+      const spki = certificate.publicKey.export({ type: 'spki', format: 'der' });
+      resolve(`sha256//${createHash('sha256').update(spki).digest('base64')}`);
+    });
+    socket.setTimeout(15000, () => {
+      socket.destroy(new Error(`${host} javob bermadi (timeout)`));
+    });
+    socket.on('error', reject);
+  });
+
+// README'dagi "Ma'lumotlarni Shifrlash" qadamlari bilan bir xil:
+// data.enc = IV (16 bayt) + AES-256-CBC shifrlangan JSON,
+// kalit.enc = AES kalit, Zirh'ning ochiq kaliti bilan RSA-OAEP (SHA-256) shifrlangan.
+const encrypt = json => {
+  const aesKey = randomBytes(32);
+  const iv = randomBytes(16);
+  const cipher = createCipheriv('aes-256-cbc', aesKey, iv);
+  const data = Buffer.concat([iv, cipher.update(json, 'utf8'), cipher.final()]);
+  const key = publicEncrypt(
+    {
+      key: ZIRH_PUBLIC_KEY,
+      padding: constants.RSA_PKCS1_OAEP_PADDING,
+      oaepHash: 'sha256',
+    },
+    aesKey,
+  );
+  return { data, key };
+};
+
+const write = (dir, name, content) => {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, name), content);
+};
+
+// Esc / Ctrl+C -> hech narsa yozmasdan chiqish.
+const cancelIfNeeded = value => {
+  if (p.isCancel(value)) {
+    p.cancel("Bekor qilindi, hech narsa o'zgarmadi");
+    process.exit(0);
+  }
+  return value;
+};
+
+const flag = name => {
+  const prefix = `--${name}=`;
+  const found = process.argv.find(arg => arg.startsWith(prefix));
+  return found === undefined ? undefined : found.slice(prefix.length);
+};
+
+// --checks=... berilsa hech narsa so'ralmaydi, saqlangan javoblar ishlatiladi.
+const answersFromFlags = (saved, checksFlag) => {
+  const names = checksFlag.split(',').filter(Boolean);
+  const known = CHECKS.map(check => check.value);
+  const unknown = names.filter(name => name !== 'none' && !known.includes(name));
+  if (unknown.length) {
+    throw new Error(
+      `Noma'lum tekshiruv: ${unknown.join(', ')}. Mavjudlari: ${known.join(', ')}`,
+    );
+  }
+
+  const urlFlag = flag('url');
+  const shaFlag = flag('sha');
+  const baseUrl =
+    urlFlag === undefined ? saved.baseUrl : urlFlag === 'none' ? '' : urlFlag;
+  const sha256 =
+    shaFlag === undefined
+      ? saved.sha256
+      : shaFlag === 'none'
+        ? ''
+        : normalizeSha(shaFlag);
+
+  if (baseUrl && !parseHttpsUrl(baseUrl)) {
+    throw new Error("--url https:// bilan boshlanadigan to'liq manzil bo'lishi kerak");
+  }
+  if (sha256 && !isValidSha(sha256)) {
+    throw new Error("--sha 64 ta hex belgidan iborat bo'lishi kerak");
+  }
+
+  const checks = names.filter(name => name !== 'none');
+  if (checks.includes('imzo') && !sha256) {
+    throw new Error("'imzo' tekshiruvi uchun SHA-256 kerak (--sha=...)");
+  }
+  return { baseUrl, sha256, checks };
+};
+
+const askAnswers = async saved => {
+  p.note(EXPLANATION, 'Avval ikki narsa');
+
+  const baseUrl = cancelIfNeeded(
+    await p.text({
+      message: "1) API manzili (base URL). Kerak bo'lmasa bo'sh qoldiring:",
+      placeholder: 'https://api.example.com/v1/',
+      initialValue: saved.baseUrl,
+      validate: validateUrl,
+    }),
+  ).trim();
+  if (!baseUrl) {
+    p.log.warn('API manzili berilmadi: zirh.request ishlamaydi.');
+  }
+
+  p.note(SHA_HELP, 'SHA-256 ni qayerdan olish');
+  const sha256 = normalizeSha(
+    cancelIfNeeded(
+      await p.text({
+        message: "2) Ilova imzosining SHA-256 qiymati. Kerak bo'lmasa bo'sh qoldiring:",
+        placeholder: 'A8:58:75:37:...',
+        initialValue: saved.sha256,
+        validate: validateSha,
+      }),
+    ),
+  );
+  if (!sha256) {
+    p.log.warn("SHA-256 berilmadi: 'Ilova imzosi' tekshiruvini yoqib bo'lmaydi.");
+  }
+
+  // SHA-256 bo'lmasa imzo tekshiruvi ro'yxatda ko'rsatilmaydi.
+  const options = CHECKS.filter(check => check.value !== 'imzo' || sha256);
+  const available = options.map(check => check.value);
+  const checks = cancelIfNeeded(
+    await p.multiselect({
+      message:
+        "Release build'da qaysi tekshiruvlar yoniq bo'lsin? (probel: belgilash, Enter: tasdiqlash)",
+      options,
+      initialValues: saved.checks.filter(check => available.includes(check)),
+      required: false,
+    }),
+  );
+
+  return { baseUrl, sha256, checks };
+};
+
+// Pinning hash'ni oladi. Olinmasa, pinningsiz davom etishni foydalanuvchi hal qiladi.
+const resolvePinHash = async (baseUrl, interactive) => {
+  if (!baseUrl) {
+    return null;
+  }
+  const { hostname, port } = new URL(baseUrl);
+  const spinner = p.spinner();
+  spinner.start(`${hostname} sertifikatidan pinning hash olinmoqda`);
+  try {
+    const hash = await fetchPinHash(hostname, Number(port) || 443);
+    spinner.stop(`Pinning hash: ${hash}`);
+    return hash;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    spinner.stop(`Pinning hash olinmadi: ${reason}`);
+    if (!interactive) {
+      throw new Error(`${hostname} dan pinning hash olinmadi: ${reason}`);
+    }
+    const proceed = cancelIfNeeded(
+      await p.confirm({
+        message: 'Pinningsiz davom etaymi? (zirh.request ishlamaydi, qolgani ishlaydi)',
+        initialValue: false,
+      }),
+    );
+    if (!proceed) {
+      p.cancel("To'xtatildi, hech narsa o'zgarmadi");
+      process.exit(0);
+    }
+    return null;
+  }
+};
+
+const main = async () => {
+  p.intro('Zirh himoya sozlamalari');
+
+  const saved = readSaved();
+  const checksFlag = flag('checks');
+  const interactive = checksFlag === undefined;
+  const { baseUrl, sha256, checks } = interactive
+    ? await askAnswers(saved)
+    : answersFromFlags(saved, checksFlag);
+
+  const pinHash = await resolvePinHash(baseUrl, interactive);
+
+  // hashlar bo'lmasa Zirh so'rov yubormaydi, shuning uchun pinning hash'siz
+  // base URL ham yozilmaydi.
+  const network = pinHash
+    ? {
+        hashlar: [pinHash],
+        domainlar: [new URL(baseUrl).origin],
+        api: { base_url: baseUrl },
+      }
+    : {};
+
+  const release = {
+    ...(checks.includes('imzo') ? { imzo: sha256 } : {}),
+    playmarket: checks.includes('playmarket'),
+    emulyator: checks.includes('emulyator'),
+    vpn: checks.includes('vpn'),
+    jailbreak: checks.includes('jailbreak'),
+    ...network,
+  };
+
+  // Android debug build uchun: hamma tekshiruv o'chiq.
+  const debug = {
+    playmarket: false,
+    emulyator: false,
+    vpn: false,
+    jailbreak: false,
+    ...network,
+  };
+
+  const releaseFiles = encrypt(JSON.stringify(release));
+
+  const written = [];
+  if (existsSync(ANDROID_APP)) {
+    const debugFiles = encrypt(JSON.stringify(debug));
+    write(ANDROID_RELEASE, 'data.enc', releaseFiles.data);
+    write(ANDROID_RELEASE, 'kalit.enc', releaseFiles.key);
+    write(ANDROID_DEBUG, 'data.enc', debugFiles.data);
+    write(ANDROID_DEBUG, 'kalit.enc', debugFiles.key);
+    written.push('Android');
+  }
+  if (existsSync(IOS_SDK)) {
+    write(IOS_CONFIG, 'data.enc', releaseFiles.data);
+    write(IOS_CONFIG, 'kalit.enc', releaseFiles.key);
+    written.push('iOS');
+  }
+  if (!written.length) {
+    throw new Error(
+      'android/app ham, ios/ZirhSDK ham topilmadi: scriptni loyiha ildizidan ishga tushiring',
+    );
+  }
+
+  writeFileSync(SAVED_FILE, `${JSON.stringify({ baseUrl, sha256, checks }, null, 2)}\n`);
+
+  const mark = on => (on ? '● yoniq ' : "○ o'chiq");
+  p.note(
+    [
+      `${mark(true)}  zirh.get (shifrlangan sozlamani o'qish)`,
+      `${mark(Boolean(pinHash))}  zirh.request (pinning bilan so'rov)${
+        pinHash ? '' : '  <- API manzili kerak'
+      }`,
+      ...CHECKS.map(check => {
+        const missingSha = check.value === 'imzo' && !sha256;
+        return `${mark(checks.includes(check.value))}  ${check.label}${
+          missingSha ? '  <- SHA-256 kerak' : ''
+        }`;
+      }),
+    ].join('\n'),
+    `Release build (${written.join(' va ')})`,
+  );
+  p.outro('Tayyor. Kuchga kirishi uchun ilovani qayta build qiling.');
+};
+
+main().catch(error => {
+  p.log.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});
+```
+
+</details>
+
+## 6. Eslatmalar
 
 - `zirh.request` ishlashi uchun `data.json` da `hashlar` bo'lishi shart. Hash'i ro'yxatda bo'lmagan domenga so'rov yuborilmaydi.
 - **Ilova imzosi (`imzo`).** Ilova Play Market orqali tarqatilsa va Play App Signing yoqilgan bo'lsa, `imzo` ga yuklash kaliti (upload key) emas, Google'ning kaliti yoziladi. Uni Play Console'da topasiz: **Protected with Play → Play Store protection → Play app signing → App signing key → Classical key → SHA-256 certificate fingerprint**. Qiymatni ikki nuqtasiz, kichik harflarda yozing.
